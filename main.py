@@ -1,7 +1,11 @@
+#this is before adding authorisation
 from fastapi import FastAPI, HTTPException
 import mysql.connector
 from pydantic import BaseModel
 from typing import List
+import httpx
+import asyncpg
+import aiomysql
 
 class User(BaseModel):
     id: int
@@ -31,42 +35,73 @@ def get_connect():
     )
     return connection
 
+async def healthcheck():
+    try:
+        config = get_connect()
+        async with aiomysql.connect(
+            user=config['user'],
+            password=config['password'],
+            database=config['database'],
+            host=config['host'],
+            port=config['port']
+        ) as connection:
+            return True
+    except:
+        return False
+
+@app.get("/health/")
+async def health_check():
+    status = await healthcheck()
+    return {"message": "okay" if status else "not okay"}              
+
 @app.post("/users/", response_model=User)
 async def create_user(user: User):
-    connection = get_connect()
-    conn = connection.cursor(dictionary=True)
-    query = "insert into usr (username, phone, email, city, district, state) VALUES (%s, %s, %s, %s, %s, %s)"
-    conn.execute(query, (user.username, user.phone, user.email, user.city, user.district, user.state))
-    connection.commit()
+    try:
+        connection = get_connect()
+        conn = connection.cursor(dictionary=True)
+        query = "insert into usr (username, phone, email, city, district, state) VALUES (%s, %s, %s, %s, %s, %s)"
+        conn.execute(query, (user.username, user.phone, user.email, user.city, user.district, user.state))
+        connection.commit()
+        user_id = conn.lastrowid
+        return {**user.dict(), "id": user_id}
+    except Exception as e:
+        raise HTTPException(status_code=500,details="")
+    finally:
+        conn.close()
+        connection.close()
     
-    user_id = conn.lastrowid
-    conn.close()
-    connection.close()
-    
-    return {**user.dict(), "id": user_id}
-
-
 @app.get("/users/", response_model=List[User])
 async def get_users():
-    connection = get_connect()
-    conn = connection.cursor(dictionary=True)
-    conn.execute("select * from usr")
-    rows = conn.fetchall()
-    conn.close()
-    connection.close()
+    try:
+        connection = get_connect()
+        conn = connection.cursor(dictionary=True)
+        conn.execute("select * from usr")
+        rows = conn.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=500,details="error occured while viewing all users")
+    finally:
+        conn.close()
+        connection.close()
     return rows
 
 @app.get("/users/{user_id}", response_model=User)
 async def get_user(user_id: int):
-    connection = get_connect()
-    conn = connection.cursor(dictionary=True)
-    conn.execute("select * from usr where id = %s", (user_id,))
-    row = conn.fetchone()
-    conn.close()
-    connection.close()
-    if row is None:
-        raise HTTPException(status_code=404, detail="user not found")
-    return row
+    try:
+        connection = get_connect()
+        conn = connection.cursor(dictionary=True)
+        conn.execute("select * from usr where id = %s", (user_id,))
+        row = conn.fetchone()
+
+        if row is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        return row
+    
+    except Exception as e:
+        raise HTTPException(status_code="500",details="an error occured while inserting values into the table")
+    
+    finally:
+        conn.close()
+        connection.close()
 
 @app.put("/users/{user_id}", response_model=User)
 async def update_user(user_id: int, user: User):
@@ -86,7 +121,7 @@ async def update_user(user_id: int, user: User):
         return {**user.dict(), "id": user_id}
 
     except Exception:
-        raise HTTPException(status_code=500, detail="An error occurred while updating the user")
+        raise HTTPException(status_code=500, detail="error occurred while updating user")
 
     finally:
         if conn:
@@ -96,10 +131,23 @@ async def update_user(user_id: int, user: User):
 
 @app.delete("/users/{user_id}")
 async def delete_user(user_id: int):
-    connection = get_connect()
-    conn = connection.cursor(dictionary=True)
-    conn.execute("delete from usr where id = %s", (user_id,))
-    connection.commit()
-    conn.close()
-    connection.close()
-    return {"message": "User deleted"}
+    try:
+        connection = get_connect()
+        conn = connection.cursor(dictionary=True)
+        conn.execute("select * from usr where id = %s", (user_id,))
+        existing_user= conn.fetchone()
+
+        if not existing_user:
+            raise HTTPException(status_code=404, detail="user not found")
+        query= "delete from usr where id=%s"
+        conn.execute(query,(user_id,))
+        connection.commit()
+        return {"message": "User deleted"}
+    
+    except Exception:
+        raise HTTPException(status_code=500,detail="error occured while deleting")
+    
+    finally:
+        conn.close()
+        connection.close()
+    
